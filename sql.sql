@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: db5021374724.hosting-data.io
--- Generation Time: Sep 22, 2026 at 03:31 AM
+-- Generation Time: Sep 22, 2026 at 11:00 AM
 -- Server version: 11.8.8-MariaDB-log
 -- PHP Version: 7.4.33
 
@@ -697,6 +697,12 @@ CREATE TABLE `staff` (
   `user_id` bigint(20) UNSIGNED DEFAULT NULL,
   `name` varchar(255) NOT NULL,
   `phone` varchar(20) DEFAULT NULL,
+  `date_of_birth` date DEFAULT NULL,
+  `photo_path` varchar(255) DEFAULT NULL,
+  `id1_label` varchar(60) DEFAULT NULL,
+  `id1_path` varchar(255) DEFAULT NULL,
+  `id2_label` varchar(60) DEFAULT NULL,
+  `id2_path` varchar(255) DEFAULT NULL,
   `designation` varchar(100) DEFAULT NULL,
   `monthly_salary` decimal(10,2) NOT NULL DEFAULT 0.00,
   `joined_on` date DEFAULT NULL,
@@ -771,6 +777,23 @@ CREATE TABLE `staff_attendance` (
   `date` date NOT NULL,
   `status` enum('present','absent','half_day','paid_leave','unpaid_leave','week_off') NOT NULL,
   `marked_by_user_id` bigint(20) UNSIGNED DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `staff_employment_periods`
+--
+
+CREATE TABLE `staff_employment_periods` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `company_id` bigint(20) UNSIGNED NOT NULL,
+  `staff_id` bigint(20) UNSIGNED NOT NULL,
+  `started_on` date NOT NULL,
+  `ended_on` date DEFAULT NULL,
+  `notes` varchar(255) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1336,6 +1359,14 @@ ALTER TABLE `staff_attendance`
   ADD KEY `idx_attendance_company_date` (`company_id`,`date`);
 
 --
+-- Indexes for table `staff_employment_periods`
+--
+ALTER TABLE `staff_employment_periods`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_periods_staff` (`staff_id`,`started_on`),
+  ADD KEY `fk_periods_company` (`company_id`);
+
+--
 -- Indexes for table `staff_payroll`
 --
 ALTER TABLE `staff_payroll`
@@ -1656,6 +1687,12 @@ ALTER TABLE `staff_attendance`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
 --
+-- AUTO_INCREMENT for table `staff_employment_periods`
+--
+ALTER TABLE `staff_employment_periods`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+--
 -- AUTO_INCREMENT for table `staff_payroll`
 --
 ALTER TABLE `staff_payroll`
@@ -1965,6 +2002,13 @@ ALTER TABLE `staff_advance_recoveries`
 ALTER TABLE `staff_attendance`
   ADD CONSTRAINT `fk_attendance_company` FOREIGN KEY (`company_id`) REFERENCES `companies` (`id`) ON DELETE CASCADE,
   ADD CONSTRAINT `fk_attendance_staff` FOREIGN KEY (`staff_id`) REFERENCES `staff` (`id`) ON DELETE CASCADE;
+
+--
+-- Constraints for table `staff_employment_periods`
+--
+ALTER TABLE `staff_employment_periods`
+  ADD CONSTRAINT `fk_periods_company` FOREIGN KEY (`company_id`) REFERENCES `companies` (`id`) ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_periods_staff` FOREIGN KEY (`staff_id`) REFERENCES `staff` (`id`) ON DELETE CASCADE;
 
 --
 -- Constraints for table `staff_payroll`

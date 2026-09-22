@@ -2,6 +2,7 @@
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/../includes/permissions.php';
 require_once __DIR__ . '/../includes/line_items.php';
+require_once __DIR__ . '/../includes/contacts.php';
 
 // Read-only page — no POST handling. Pro-only: company Owner on a Pro
 // membership. Workers and vets go to the dashboard; Owners without Pro
@@ -55,7 +56,8 @@ if ($buckets) {
     }
 
     $stmt = $pdo->prepare(
-        "SELECT ss.species_id, ss.breed_id, ss.age_days, sup.id AS supplier_id, sup.name, sup.phone, ss.rate, ss.unit, ss.moq
+        "SELECT ss.species_id, ss.breed_id, ss.age_days, sup.id AS supplier_id, sup.name,
+                sup.phone, sup.phone2, sup.phone3, sup.phone4, ss.rate, ss.unit, ss.moq
          FROM supplier_species ss
          JOIN suppliers sup ON sup.id = ss.supplier_id
          WHERE sup.company_id = ?
@@ -151,23 +153,39 @@ if ($buckets) {
                                 <?php elseif ($matchMode === 'other'): ?>
                                     <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>No supplier at exactly <?= htmlspecialchars(hef_format_age($age)) ?>. Suppliers with other ages:</div>
                                 <?php endif; ?>
-                                <ul class="list-unstyled small mb-0">
+                                <div class="row row-cols-1 row-cols-md-2 g-2">
                                     <?php foreach ($supplierRows as $i => $sr): ?>
-                                        <?php $srAge = $sr['age_days'] !== null ? (int) $sr['age_days'] : null; ?>
-                                        <li class="d-flex justify-content-between align-items-center py-1 border-bottom">
-                                            <span>
-                                                <?php if ($matchMode === 'exact' && $i === 0): ?><i class="bi bi-star-fill text-warning me-1" title="Cheapest"></i><?php endif; ?>
-                                                <?= htmlspecialchars($sr['name']) ?> —
-                                                ₹<?= htmlspecialchars($sr['rate']) ?><?= $sr['unit'] ? '/' . htmlspecialchars($sr['unit']) : '' ?>
-                                                <span class="text-muted">(MOQ <?= (int) $sr['moq'] ?>)</span>
-                                                <?php if ($matchMode !== 'exact' || $srAge === null): ?>
-                                                    <span class="badge bg-light text-dark border ms-1"><?= htmlspecialchars(hef_format_age($srAge)) ?></span>
+                                        <?php
+                                            $srAge = $sr['age_days'] !== null ? (int) $sr['age_days'] : null;
+                                            $srNumbers = array_values(array_filter([$sr['phone'], $sr['phone2'] ?? null, $sr['phone3'] ?? null, $sr['phone4'] ?? null]));
+                                        ?>
+                                        <div class="col">
+                                            <div class="border rounded p-2 h-100 bg-white small">
+                                                <div class="fw-semibold" style="overflow-wrap:anywhere;">
+                                                    <?php if ($matchMode === 'exact' && $i === 0): ?><i class="bi bi-star-fill text-warning me-1" title="Cheapest"></i><?php endif; ?>
+                                                    <?= htmlspecialchars($sr['name']) ?>
+                                                </div>
+                                                <div class="text-muted mb-1">
+                                                    ₹<?= htmlspecialchars($sr['rate']) ?><?= $sr['unit'] ? '/' . htmlspecialchars($sr['unit']) : '' ?>
+                                                    (MOQ <?= (int) $sr['moq'] ?>)
+                                                    <?php if ($matchMode !== 'exact' || $srAge === null): ?>
+                                                        <span class="badge bg-light text-dark border ms-1"><?= htmlspecialchars(hef_format_age($srAge)) ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                                <?php if (! $srNumbers): ?>
+                                                    <div class="text-muted">No phone number</div>
+                                                <?php else: ?>
+                                                    <?php foreach ($srNumbers as $srNum): ?>
+                                                        <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap py-1 border-top">
+                                                            <span class="text-nowrap"><i class="bi bi-telephone me-1 text-muted"></i><?= htmlspecialchars(hef_format_phone($srNum)) ?></span>
+                                                            <span class="text-nowrap"><?= hef_contact_buttons($srNum, $supplierMessage) ?></span>
+                                                        </div>
+                                                    <?php endforeach; ?>
                                                 <?php endif; ?>
-                                            </span>
-                                            <span><?= hef_contact_buttons($sr['phone'], $supplierMessage) ?></span>
-                                        </li>
+                                            </div>
+                                        </div>
                                     <?php endforeach; ?>
-                                </ul>
+                                </div>
                             <?php endif; ?>
                         </div>
                     </div>

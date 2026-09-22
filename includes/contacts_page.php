@@ -173,7 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['add_contact_note']) 
 }
 
 // ---------------------------------------------------------------- the list
-$show = in_array($_GET['show'] ?? 'active', ['active', 'closed', 'all'], true) ? $_GET['show'] : 'active';
+$show = in_array($_GET['show'] ?? 'active', ['active', 'closed', 'all'], true) ? ($_GET['show'] ?? 'active') : 'active';
 
 $stmt = $pdo->prepare('SELECT status, COUNT(*) AS c FROM ' . $T['table'] . ' WHERE company_id = ? GROUP BY status');
 $stmt->execute([$companyId]);

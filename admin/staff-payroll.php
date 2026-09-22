@@ -7,6 +7,7 @@ hef_require_pro($pdo, $currentUser); // Staff & Payroll is a Pro feature (Owner 
 // for how every figure is worked out.
 
 $companyId = (int) $currentUser['company_id'];
+hef_reconcile_staff_periods($pdo, $companyId);
 $settings = hef_payroll_settings($pdo, $companyId);
 $today = hef_company_today($settings['timezone']);
 $lastMonth = (new DateTimeImmutable($today))->modify('first day of last month')->format('Y-m-d');
@@ -165,7 +166,7 @@ foreach ($rows as $r) {
 // Staff who should have a row for this month but don't yet.
 $missing = 0;
 foreach (hef_staff_for_month($pdo, $companyId, $month) as $s) {
-    if (! isset($rowStaffIds[(int) $s['id']]) && hef_staff_month_window($s, $month) !== null) {
+    if (! isset($rowStaffIds[(int) $s['id']]) && hef_staff_month_window($pdo, $s, $month) !== null) {
         $missing++;
     }
 }

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/../includes/uploads.php';
 hef_require_pro($pdo, $currentUser); // Staff & Payroll is a Pro feature (Owner only)
 
 // Staff master list. Staff don't need an app login: a person can be added
@@ -7,10 +8,11 @@ hef_require_pro($pdo, $currentUser); // Staff & Payroll is a Pro feature (Owner 
 // Salary details are for the Owner only.
 
 $companyId = (int) $currentUser['company_id'];
+hef_reconcile_staff_periods($pdo, $companyId);
 $error = '';
 $status = '';
 $openAdd = false;
-$addValues = ['name' => '', 'phone' => '', 'designation' => '', 'monthly_salary' => '', 'joined_on' => '', 'left_on' => '', 'user_id' => '', 'status' => 'active', 'notes' => ''];
+$addValues = ['name' => '', 'phone' => '', 'date_of_birth' => '', 'designation' => '', 'monthly_salary' => '', 'joined_on' => '', 'left_on' => '', 'user_id' => '', 'status' => 'active', 'notes' => ''];
 $settings = hef_payroll_settings($pdo, $companyId);
 $today = hef_company_today($settings['timezone']);
 
@@ -26,6 +28,7 @@ function hef_read_staff_form(array $post, PDO $pdo, int $companyId, int $staffId
     $phone = preg_replace('/[^0-9+\-\s()]/', '', trim((string) ($post['phone'] ?? '')));
     $designation = trim((string) ($post['designation'] ?? ''));
     $salaryRaw = trim((string) ($post['monthly_salary'] ?? ''));
+    $dob = trim((string) ($post['date_of_birth'] ?? ''));
     $joined = trim((string) ($post['joined_on'] ?? ''));
     $left = trim((string) ($post['left_on'] ?? ''));
     $userId = (int) ($post['user_id'] ?? 0);
@@ -45,6 +48,8 @@ function hef_read_staff_form(array $post, PDO $pdo, int $companyId, int $staffId
         $error = 'Enter a valid last working date.';
     } elseif ($joined !== '' && $left !== '' && $left < $joined) {
         $error = 'The last working date can\'t be before the joining date.';
+    } elseif ($dob !== '' && (! $isDate($dob) || $dob >= date('Y-m-d'))) {
+        $error = 'Enter a valid date of birth.';
     }
 
     // Optional link to an app user of this company that isn't already another staff record.
@@ -66,7 +71,8 @@ function hef_read_staff_form(array $post, PDO $pdo, int $companyId, int $staffId
     }
 
     return [
-        'name' => $name, 'phone' => $phone !== '' ? $phone : null, 'designation' => $designation !== '' ? $designation : null,
+        'name' => $name, 'phone' => $phone !== '' ? $phone : null, 'date_of_birth' => $dob !== '' ? $dob : null,
+        'designation' => $designation !== '' ? $designation : null,
         'monthly_salary' => round((float) $salaryRaw, 2), 'joined_on' => $joined !== '' ? $joined : null,
         'left_on' => $left !== '' ? $left : null, 'user_id' => $linkedUser, 'status' => $active,
         'notes' => $notes !== '' ? $notes : null, 'error' => $error,
@@ -86,44 +92,111 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } else {
             try {
+                $photoPath = hef_handle_image_upload('photo', 'staff');
+                $id1Path = hef_handle_image_upload('id1_file', 'staff');
+                $id2Path = hef_handle_image_upload('id2_file', 'staff');
+                $id1Label = trim((string) ($_POST['id1_label'] ?? '')) ?: null;
+                $id2Label = trim((string) ($_POST['id2_label'] ?? '')) ?: null;
+
                 if ($staffId === 0) {
                     $pdo->prepare(
-                        'INSERT INTO staff (company_id, user_id, name, phone, designation, monthly_salary, joined_on, left_on, status, notes, created_at, updated_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())'
-                    )->execute([$companyId, $f['user_id'], $f['name'], $f['phone'], $f['designation'], $f['monthly_salary'], $f['joined_on'], $f['left_on'], $f['status'], $f['notes']]);
+                        'INSERT INTO staff (company_id, user_id, name, phone, date_of_birth, designation, monthly_salary,
+                                joined_on, left_on, status, notes, photo_path, id1_label, id1_path, id2_label, id2_path, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())'
+                    )->execute([
+                        $companyId, $f['user_id'], $f['name'], $f['phone'], $f['date_of_birth'], $f['designation'], $f['monthly_salary'],
+                        $f['joined_on'], $f['left_on'], $f['status'], $f['notes'], $photoPath, $id1Label, $id1Path, $id2Label, $id2Path,
+                    ]);
+                    $newStaffId = (int) $pdo->lastInsertId();
+                    // Their first period of employment.
+                    $pdo->prepare('INSERT INTO staff_employment_periods (company_id, staff_id, started_on, ended_on, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())')
+                        ->execute([$companyId, $newStaffId, $f['joined_on'] ?: $today, $f['status'] === 'inactive' ? ($f['left_on'] ?: $today) : null]);
                     $status = 'Added ' . $f['name'] . '.';
                 } else {
-                    $pdo->prepare(
-                        'UPDATE staff SET user_id = ?, name = ?, phone = ?, designation = ?, monthly_salary = ?, joined_on = ?, left_on = ?, status = ?, notes = ?, updated_at = NOW()
-                         WHERE id = ? AND company_id = ?'
-                    )->execute([$f['user_id'], $f['name'], $f['phone'], $f['designation'], $f['monthly_salary'], $f['joined_on'], $f['left_on'], $f['status'], $f['notes'], $staffId, $companyId]);
+                    $stmt = $pdo->prepare('SELECT photo_path, id1_path, id2_path FROM staff WHERE id = ? AND company_id = ?');
+                    $stmt->execute([$staffId, $companyId]);
+                    $oldFiles = $stmt->fetch() ?: [];
+
+                    $sql = 'UPDATE staff SET user_id = ?, name = ?, phone = ?, date_of_birth = ?, designation = ?, monthly_salary = ?,
+                                joined_on = ?, left_on = ?, status = ?, notes = ?, id1_label = ?, id2_label = ?';
+                    $params = [
+                        $f['user_id'], $f['name'], $f['phone'], $f['date_of_birth'], $f['designation'], $f['monthly_salary'],
+                        $f['joined_on'], $f['left_on'], $f['status'], $f['notes'], $id1Label, $id2Label,
+                    ];
+                    foreach (['photo_path' => $photoPath, 'id1_path' => $id1Path, 'id2_path' => $id2Path] as $col => $newPath) {
+                        if ($newPath !== null) {
+                            $sql .= ", {$col} = ?";
+                            $params[] = $newPath;
+                        }
+                    }
+                    $sql .= ' WHERE id = ? AND company_id = ?';
+                    $params[] = $staffId;
+                    $params[] = $companyId;
+                    $pdo->prepare($sql)->execute($params);
+
+                    foreach (['photo_path' => $photoPath, 'id1_path' => $id1Path, 'id2_path' => $id2Path] as $col => $newPath) {
+                        if ($newPath !== null) {
+                            hef_delete_uploaded_image($oldFiles[$col] ?? null);
+                        }
+                    }
+
+                    // If this is their only period on file, keep it lined up with the dates on the form.
+                    $stmt = $pdo->prepare('SELECT id FROM staff_employment_periods WHERE staff_id = ?');
+                    $stmt->execute([$staffId]);
+                    $periodIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                    if (count($periodIds) === 1) {
+                        $pdo->prepare('UPDATE staff_employment_periods SET started_on = ?, ended_on = ?, updated_at = NOW() WHERE id = ?')
+                            ->execute([$f['joined_on'] ?: $today, $f['status'] === 'inactive' ? $f['left_on'] : null, $periodIds[0]]);
+                    }
+
                     $status = 'Updated ' . $f['name'] . '. Draft payroll uses the new details when you recalculate it.';
                 }
+            } catch (RuntimeException $e) {
+                $error = $e->getMessage();
             } catch (PDOException $e) {
                 error_log('staff save failed: ' . $e->getMessage());
                 $error = 'Could not save this staff member.';
             }
         }
-    } elseif (isset($_POST['toggle_staff_id'])) {
-        $id = (int) $_POST['toggle_staff_id'];
-        $stmt = $pdo->prepare('SELECT status, left_on FROM staff WHERE id = ? AND company_id = ?');
+    } elseif (isset($_POST['leave_staff_id'])) {
+        // Leaving: closes their current period of employment and stops future payroll after that day.
+        $id = (int) $_POST['leave_staff_id'];
+        $leftOn = trim((string) ($_POST['left_on'] ?? '')) ?: $today;
+        $stmt = $pdo->prepare('SELECT id, name FROM staff WHERE id = ? AND company_id = ?');
         $stmt->execute([$id, $companyId]);
         if ($row = $stmt->fetch()) {
-            if ($row['status'] === 'active') {
-                // Leaving: stops future payroll after their last working day.
-                $pdo->prepare("UPDATE staff SET status = 'inactive', left_on = COALESCE(left_on, ?), updated_at = NOW() WHERE id = ?")->execute([$today, $id]);
-                $status = 'Marked as no longer working here (last day ' . date('d M Y', strtotime($row['left_on'] ?: $today)) . ').';
-            } else {
-                $pdo->prepare("UPDATE staff SET status = 'active', left_on = NULL, updated_at = NOW() WHERE id = ?")->execute([$id]);
-                $status = 'Staff member is active again.';
-            }
+            $pdo->prepare("UPDATE staff SET status = 'inactive', left_on = ?, updated_at = NOW() WHERE id = ?")->execute([$leftOn, $id]);
+            $pdo->prepare('UPDATE staff_employment_periods SET ended_on = ?, updated_at = NOW() WHERE staff_id = ? AND ended_on IS NULL')->execute([$leftOn, $id]);
+            $status = $row['name'] . ' marked as no longer working here (last day ' . date('d M Y', strtotime($leftOn)) . ').';
+        }
+    } elseif (isset($_POST['rejoin_staff_id'])) {
+        // Coming back: opens a new period rather than reusing the old one, so both stints are kept.
+        $id = (int) $_POST['rejoin_staff_id'];
+        $rejoinOn = trim((string) ($_POST['rejoin_on'] ?? ''));
+        $d = DateTime::createFromFormat('Y-m-d', $rejoinOn);
+        $stmt = $pdo->prepare('SELECT id, name FROM staff WHERE id = ? AND company_id = ?');
+        $stmt->execute([$id, $companyId]);
+        $row = $stmt->fetch();
+        if (! $row) {
+            $error = 'Staff member not found.';
+        } elseif (! $d || $d->format('Y-m-d') !== $rejoinOn) {
+            $error = 'Enter the date they came back.';
+        } else {
+            $pdo->prepare("UPDATE staff SET status = 'active', joined_on = ?, left_on = NULL, updated_at = NOW() WHERE id = ?")->execute([$rejoinOn, $id]);
+            $pdo->prepare('INSERT INTO staff_employment_periods (company_id, staff_id, started_on, ended_on, created_at, updated_at) VALUES (?, ?, ?, NULL, NOW(), NOW())')
+                ->execute([$companyId, $id, $rejoinOn]);
+            $status = $row['name'] . ' is working here again from ' . date('d M Y', strtotime($rejoinOn)) . '.';
         }
     } elseif (isset($_POST['delete_staff_id'])) {
         $id = (int) $_POST['delete_staff_id'];
         $stmt = $pdo->prepare("SELECT COUNT(*) FROM staff_payroll WHERE staff_id = ? AND company_id = ? AND status = 'paid'");
         $stmt->execute([$id, $companyId]);
+        $stmt2 = $pdo->prepare('SELECT COUNT(*) FROM staff_employment_periods WHERE staff_id = ?');
+        $stmt2->execute([$id]);
         if ((int) $stmt->fetchColumn() > 0) {
             $error = 'This person has paid salary records, so they can\'t be deleted. Mark them as no longer working here instead.';
+        } elseif ((int) $stmt2->fetchColumn() > 1) {
+            $error = 'This person has more than one period of employment on file, so they can\'t be deleted (that history would be lost). Mark them as no longer working here instead.';
         } else {
             $pdo->prepare('DELETE FROM staff WHERE id = ? AND company_id = ?')->execute([$id, $companyId]);
             $status = 'Staff member deleted along with their attendance and unpaid payroll.';
@@ -183,9 +256,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['add_user'])) {
     }
 }
 
-// Staff, with their advance balance.
+// Staff, with their advance balance and how many separate periods of
+// employment they have on file (affects whether the edit dialog lets you
+// change the joining / leaving dates directly — see hef_staff_form_fields()).
 $stmt = $pdo->prepare(
-    'SELECT s.*, COALESCE((SELECT SUM(a.amount - a.recovered) FROM staff_advances a WHERE a.staff_id = s.id), 0) AS advance_balance
+    'SELECT s.*, COALESCE((SELECT SUM(a.amount - a.recovered) FROM staff_advances a WHERE a.staff_id = s.id), 0) AS advance_balance,
+            (SELECT COUNT(*) FROM staff_employment_periods p WHERE p.staff_id = s.id) AS period_count
      FROM staff s WHERE s.company_id = ? ORDER BY (s.status = "active") DESC, s.name'
 );
 $stmt->execute([$companyId]);
@@ -206,7 +282,7 @@ $unlinkedUsers = array_values(array_filter($allUsers, function ($u) use ($linked
 }));
 
 /** The staff form fields, shared by the add and edit dialogs. */
-function hef_staff_form_fields(array $v, string $id, array $userChoices, bool $isEdit): void
+function hef_staff_form_fields(array $v, string $id, array $userChoices, bool $isEdit, int $periodCount = 1): void
 {
     ?>
     <div class="row g-2 mb-2">
@@ -219,29 +295,61 @@ function hef_staff_form_fields(array $v, string $id, array $userChoices, bool $i
             <input type="text" name="phone" id="<?= $id ?>Phone" class="form-control" maxlength="20" value="<?= htmlspecialchars((string) $v['phone']) ?>">
         </div>
         <div class="col-6 col-md-3">
-            <label class="form-label small" for="<?= $id ?>Role">Designation</label>
-            <input type="text" name="designation" id="<?= $id ?>Role" class="form-control" maxlength="100" placeholder="e.g. Supervisor" value="<?= htmlspecialchars((string) $v['designation']) ?>">
+            <label class="form-label small" for="<?= $id ?>Dob">Date of birth</label>
+            <input type="date" name="date_of_birth" id="<?= $id ?>Dob" class="form-control" max="<?= date('Y-m-d', strtotime('-1 day')) ?>" value="<?= htmlspecialchars((string) ($v['date_of_birth'] ?? '')) ?>">
         </div>
+    </div>
+    <div class="mb-2">
+        <label class="form-label small" for="<?= $id ?>Role">Designation</label>
+        <input type="text" name="designation" id="<?= $id ?>Role" class="form-control" maxlength="100" placeholder="e.g. Supervisor" value="<?= htmlspecialchars((string) $v['designation']) ?>">
     </div>
     <div class="row g-2 mb-2">
         <div class="col-6 col-md-3">
             <label class="form-label small" for="<?= $id ?>Salary">Monthly salary (₹)</label>
             <input type="number" name="monthly_salary" id="<?= $id ?>Salary" class="form-control" min="0" step="0.01" required value="<?= htmlspecialchars((string) $v['monthly_salary']) ?>">
         </div>
-        <div class="col-6 col-md-3">
-            <label class="form-label small" for="<?= $id ?>Joined">Joined on</label>
-            <input type="date" name="joined_on" id="<?= $id ?>Joined" class="form-control" value="<?= htmlspecialchars((string) $v['joined_on']) ?>">
+        <?php if ($periodCount <= 1): ?>
+            <div class="col-6 col-md-3">
+                <label class="form-label small" for="<?= $id ?>Joined">Joined on</label>
+                <input type="date" name="joined_on" id="<?= $id ?>Joined" class="form-control" value="<?= htmlspecialchars((string) $v['joined_on']) ?>">
+            </div>
+            <div class="col-6 col-md-3">
+                <label class="form-label small" for="<?= $id ?>Left">Last working day</label>
+                <input type="date" name="left_on" id="<?= $id ?>Left" class="form-control" value="<?= htmlspecialchars((string) $v['left_on']) ?>">
+            </div>
+            <div class="col-6 col-md-3">
+                <label class="form-label small" for="<?= $id ?>Status">Status</label>
+                <select name="status" id="<?= $id ?>Status" class="form-select">
+                    <option value="active" <?= $v['status'] !== 'inactive' ? 'selected' : '' ?>>Working here</option>
+                    <option value="inactive" <?= $v['status'] === 'inactive' ? 'selected' : '' ?>>Left</option>
+                </select>
+            </div>
+        <?php else: ?>
+            <input type="hidden" name="joined_on" value="<?= htmlspecialchars((string) $v['joined_on']) ?>">
+            <input type="hidden" name="left_on" value="<?= htmlspecialchars((string) $v['left_on']) ?>">
+            <input type="hidden" name="status" value="<?= htmlspecialchars((string) $v['status']) ?>">
+            <div class="col-12 col-md-9">
+                <div class="form-text mt-4 pt-1">This person has more than one period of employment — manage joining/leaving dates from <a href="/hef/admin/staff-view.php?id=<?= (int) ($v['id'] ?? 0) ?>">their profile page</a> instead.</div>
+            </div>
+        <?php endif; ?>
+    </div>
+    <div class="row g-2 mb-2">
+        <div class="col-6 col-md-4">
+            <label class="form-label small" for="<?= $id ?>Photo">Photo <?= ! empty($v['photo_path']) ? '<span class="text-muted">(leave blank to keep)</span>' : '' ?></label>
+            <?php if (! empty($v['photo_path'])): ?><img src="/hef/<?= htmlspecialchars($v['photo_path']) ?>" style="height:40px; width:40px; object-fit:cover; border-radius:6px;" class="d-block mb-1"><?php endif; ?>
+            <input type="file" name="photo" id="<?= $id ?>Photo" class="form-control form-control-sm" accept="image/*">
         </div>
-        <div class="col-6 col-md-3">
-            <label class="form-label small" for="<?= $id ?>Left">Last working day</label>
-            <input type="date" name="left_on" id="<?= $id ?>Left" class="form-control" value="<?= htmlspecialchars((string) $v['left_on']) ?>">
+        <div class="col-6 col-md-4">
+            <label class="form-label small" for="<?= $id ?>Id1Label">ID proof 1</label>
+            <input type="text" name="id1_label" id="<?= $id ?>Id1Label" class="form-control form-control-sm mb-1" maxlength="60" placeholder="e.g. Aadhaar" value="<?= htmlspecialchars((string) ($v['id1_label'] ?? '')) ?>">
+            <?php if (! empty($v['id1_path'])): ?><a href="/hef/<?= htmlspecialchars($v['id1_path']) ?>" target="_blank" class="small d-block mb-1"><i class="bi bi-file-earmark-image me-1"></i>Current file</a><?php endif; ?>
+            <input type="file" name="id1_file" class="form-control form-control-sm" accept="image/*">
         </div>
-        <div class="col-6 col-md-3">
-            <label class="form-label small" for="<?= $id ?>Status">Status</label>
-            <select name="status" id="<?= $id ?>Status" class="form-select">
-                <option value="active" <?= $v['status'] !== 'inactive' ? 'selected' : '' ?>>Working here</option>
-                <option value="inactive" <?= $v['status'] === 'inactive' ? 'selected' : '' ?>>Left</option>
-            </select>
+        <div class="col-6 col-md-4">
+            <label class="form-label small" for="<?= $id ?>Id2Label">ID proof 2</label>
+            <input type="text" name="id2_label" id="<?= $id ?>Id2Label" class="form-control form-control-sm mb-1" maxlength="60" placeholder="e.g. Voter ID" value="<?= htmlspecialchars((string) ($v['id2_label'] ?? '')) ?>">
+            <?php if (! empty($v['id2_path'])): ?><a href="/hef/<?= htmlspecialchars($v['id2_path']) ?>" target="_blank" class="small d-block mb-1"><i class="bi bi-file-earmark-image me-1"></i>Current file</a><?php endif; ?>
+            <input type="file" name="id2_file" class="form-control form-control-sm" accept="image/*">
         </div>
     </div>
     <div class="row g-2 mb-2">
@@ -307,7 +415,10 @@ $monthlyTotal = array_sum(array_map(function ($s) { return $s['status'] === 'act
                 <?php foreach ($staffList as $s): ?>
                     <tr class="<?= $s['status'] === 'inactive' ? 'text-muted' : '' ?>">
                         <td>
-                            <a href="/hef/admin/staff-view.php?id=<?= (int) $s['id'] ?>" class="fw-semibold text-decoration-none"><?= htmlspecialchars($s['name']) ?></a>
+                            <div class="d-flex align-items-center gap-2">
+                                <?php if ($s['photo_path']): ?><img src="/hef/<?= htmlspecialchars($s['photo_path']) ?>" style="width:32px; height:32px; object-fit:cover; border-radius:50%;"><?php endif; ?>
+                                <a href="/hef/admin/staff-view.php?id=<?= (int) $s['id'] ?>" class="fw-semibold text-decoration-none"><?= htmlspecialchars($s['name']) ?></a>
+                            </div>
                             <?php if ($s['user_id']): ?><span class="badge bg-info-subtle text-info ms-1" title="Has an app login"><i class="bi bi-phone"></i> App</span><?php endif; ?>
                             <?php if ($s['designation']): ?><div class="small text-muted"><?= htmlspecialchars($s['designation']) ?></div><?php endif; ?>
                         </td>
@@ -325,10 +436,11 @@ $monthlyTotal = array_sum(array_map(function ($s) { return $s['status'] === 'act
                                     <button type="button" class="btn btn-sm btn-outline-secondary" title="Give advance" data-bs-toggle="modal" data-bs-target="#advanceStaff<?= (int) $s['id'] ?>"><i class="bi bi-cash-coin"></i></button>
                                 <?php endif; ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary" title="Edit" data-bs-toggle="modal" data-bs-target="#editStaff<?= (int) $s['id'] ?>"><i class="bi bi-pencil"></i></button>
-                                <form method="POST" onsubmit="return confirm(<?= htmlspecialchars(json_encode($s['status'] === 'active' ? 'Mark ' . $s['name'] . ' as no longer working here? They are left out of payroll after today.' : 'Make ' . $s['name'] . ' active again?'), ENT_QUOTES) ?>);">
-                                    <input type="hidden" name="toggle_staff_id" value="<?= (int) $s['id'] ?>">
-                                    <button type="submit" class="btn btn-sm btn-outline-warning" title="<?= $s['status'] === 'active' ? 'Mark as left' : 'Make active' ?>"><i class="bi <?= $s['status'] === 'active' ? 'bi-box-arrow-right' : 'bi-arrow-counterclockwise' ?>"></i></button>
-                                </form>
+                                <?php if ($s['status'] === 'active'): ?>
+                                    <button type="button" class="btn btn-sm btn-outline-warning" title="Mark as left" data-bs-toggle="modal" data-bs-target="#leaveStaff<?= (int) $s['id'] ?>"><i class="bi bi-box-arrow-right"></i></button>
+                                <?php else: ?>
+                                    <button type="button" class="btn btn-sm btn-outline-success" title="Working here again" data-bs-toggle="modal" data-bs-target="#rejoinStaff<?= (int) $s['id'] ?>"><i class="bi bi-arrow-counterclockwise"></i></button>
+                                <?php endif; ?>
                                 <form method="POST" onsubmit="return confirm(<?= htmlspecialchars(json_encode('Delete ' . $s['name'] . ' permanently, with their attendance and unpaid payroll? Use "Mark as left" to keep the history.'), ENT_QUOTES) ?>);">
                                     <input type="hidden" name="delete_staff_id" value="<?= (int) $s['id'] ?>">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
@@ -347,7 +459,7 @@ $monthlyTotal = array_sum(array_map(function ($s) { return $s['status'] === 'act
 <div class="modal fade" id="addStaffModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
         <div class="modal-content">
-            <form method="POST">
+            <form method="POST" enctype="multipart/form-data">
                 <input type="hidden" name="save_staff" value="0">
                 <div class="modal-header"><h5 class="modal-title">Add staff</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                 <div class="modal-body">
@@ -370,15 +482,51 @@ $monthlyTotal = array_sum(array_map(function ($s) { return $s['status'] === 'act
     <div class="modal fade" id="editStaff<?= (int) $s['id'] ?>" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
             <div class="modal-content">
-                <form method="POST">
+                <form method="POST" enctype="multipart/form-data">
                     <input type="hidden" name="save_staff" value="<?= (int) $s['id'] ?>">
                     <div class="modal-header"><h5 class="modal-title">Edit <?= htmlspecialchars($s['name']) ?></h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-                    <div class="modal-body"><?php hef_staff_form_fields($s, 'editStaff' . (int) $s['id'], $choices, true); ?></div>
+                    <div class="modal-body"><?php hef_staff_form_fields($s, 'editStaff' . (int) $s['id'], $choices, true, (int) ($s['period_count'] ?? 1)); ?></div>
                     <div class="modal-footer"><button type="submit" class="btn btn-hef text-white w-100">Save changes</button></div>
                 </form>
             </div>
         </div>
     </div>
+
+    <?php if ($s['status'] === 'active'): ?>
+    <!-- Mark as left -->
+    <div class="modal fade" id="leaveStaff<?= (int) $s['id'] ?>" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <form method="POST">
+                    <input type="hidden" name="leave_staff_id" value="<?= (int) $s['id'] ?>">
+                    <div class="modal-header"><h5 class="modal-title">Mark <?= htmlspecialchars($s['name']) ?> as no longer working here</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                    <div class="modal-body">
+                        <div class="mb-2"><label class="form-label small">Last working day</label><input type="date" name="left_on" class="form-control" required value="<?= htmlspecialchars($today) ?>"></div>
+                        <div class="form-text">They're left out of payroll and attendance after this day. If they come back later, use "Working here again" and this stint is kept in their history.</div>
+                    </div>
+                    <div class="modal-footer"><button type="submit" class="btn btn-warning w-100">Mark as left</button></div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <?php else: ?>
+    <!-- Working here again -->
+    <div class="modal fade" id="rejoinStaff<?= (int) $s['id'] ?>" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <form method="POST">
+                    <input type="hidden" name="rejoin_staff_id" value="<?= (int) $s['id'] ?>">
+                    <div class="modal-header"><h5 class="modal-title"><?= htmlspecialchars($s['name']) ?> is working here again</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                    <div class="modal-body">
+                        <div class="mb-2"><label class="form-label small">Started again on</label><input type="date" name="rejoin_on" class="form-control" required value="<?= htmlspecialchars($today) ?>"></div>
+                        <div class="form-text">This starts a new period of employment. Their earlier stint (<?= $s['joined_on'] ? date('d M Y', strtotime($s['joined_on'])) : '?' ?>–<?= $s['left_on'] ? date('d M Y', strtotime($s['left_on'])) : '?' ?>) stays on their record.</div>
+                    </div>
+                    <div class="modal-footer"><button type="submit" class="btn btn-success w-100">Confirm</button></div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <?php if ($s['status'] === 'active'): ?>
     <div class="modal fade" id="advanceStaff<?= (int) $s['id'] ?>" tabindex="-1">

@@ -13,6 +13,7 @@ if (! hef_company_has_pro($pdo, (int) $currentUser['company_id'])) {
 // half day, leave, week off) are recorded, and choosing Present clears one.
 
 $companyId = (int) $currentUser['company_id'];
+hef_reconcile_staff_periods($pdo, $companyId);
 $userId = (int) $currentUser['user_id'];
 $settings = hef_payroll_settings($pdo, $companyId);
 $today = hef_company_today($settings['timezone']);
@@ -35,11 +36,12 @@ $monthEnd = (new DateTimeImmutable($monthStart))->modify('last day of this month
 /** Staff who were working on a given day. */
 function hef_staff_on_day(PDO $pdo, int $companyId, string $day): array
 {
+    // A period with no end (still working) or one that covers this day.
     $stmt = $pdo->prepare(
-        "SELECT id, name, designation FROM staff
-         WHERE company_id = ? AND (joined_on IS NULL OR joined_on <= ?)
-           AND (left_on IS NULL OR left_on >= ?) AND (status = 'active' OR left_on IS NOT NULL)
-         ORDER BY name"
+        "SELECT DISTINCT s.id, s.name, s.designation FROM staff s
+         JOIN staff_employment_periods p ON p.staff_id = s.id
+         WHERE s.company_id = ? AND p.started_on <= ? AND (p.ended_on IS NULL OR p.ended_on >= ?)
+         ORDER BY s.name"
     );
     $stmt->execute([$companyId, $day, $day]);
 
@@ -202,7 +204,7 @@ require_once __DIR__ . '/header.php';
                             }
                         }
                         // Present = every day employed so far this month, minus the exceptions.
-                        $w = hef_staff_month_window($s, $monthStart);
+                        $w = hef_staff_month_window($pdo, $s, $monthStart);
                         $todayDt = new DateTimeImmutable($today);
                         $endDay = ($w && $w['to'] < $todayDt) ? $w['to'] : $todayDt;
                         $daysSoFar = ($w && $w['from'] <= $endDay) ? (int) $w['from']->diff($endDay)->days + 1 : 0;
