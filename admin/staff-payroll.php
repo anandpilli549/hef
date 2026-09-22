@@ -175,6 +175,12 @@ $prev = (new DateTimeImmutable($month))->modify('-1 month')->format('Y-m');
 $next = (new DateTimeImmutable($month))->modify('+1 month')->format('Y-m');
 $dueIn = (int) (new DateTimeImmutable($today))->diff(new DateTimeImmutable($dueDate))->format('%r%a');
 
+// Salary from earlier months that was never marked paid, per staff member,
+// so it's visible alongside this month's payroll instead of getting lost in
+// a month nobody's looking at anymore.
+$arrears = hef_staff_arrears($pdo, $companyId, $month);
+$arrearsTotal = array_sum(array_column($arrears, 'total'));
+
 require_once __DIR__ . '/header.php';
 ?>
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -211,12 +217,23 @@ require_once __DIR__ . '/header.php';
     <div class="alert alert-warning py-2 small"><?= $missing ?> staff member<?= $missing === 1 ? '' : 's' ?> not calculated yet for <?= $monthLabel ?> — press <strong>Calculate payroll</strong>.</div>
 <?php endif; ?>
 
+<?php if ($arrearsTotal > 0): ?>
+    <div class="alert alert-danger py-2 small">
+        <i class="bi bi-exclamation-triangle me-1"></i>
+        <strong><?= hef_money($arrearsTotal) ?></strong> is still owed from earlier months across <?= count($arrears) ?> staff member<?= count($arrears) === 1 ? '' : 's' ?> (unpaid rows before <?= $monthLabel ?>).
+        Use the <i class="bi bi-chevron-left"></i> arrow above to open an earlier month and mark those paid — this total is not included in <?= $monthLabel ?>'s figures below.
+    </div>
+<?php endif; ?>
+
 <?php if ($rows): ?>
 <div class="row g-3 mb-3">
     <div class="col-6 col-lg-3"><div class="card p-3 text-center"><div class="fs-5 fw-bold"><?= hef_money($totals['base']) ?></div><div class="text-muted small">Basic salaries</div></div></div>
     <div class="col-6 col-lg-3"><div class="card p-3 text-center"><div class="fs-5 fw-bold text-danger">− <?= hef_money($totals['att'] + $totals['ded'] + $totals['adv']) ?></div><div class="text-muted small">Absences, deductions &amp; advances</div></div></div>
     <div class="col-6 col-lg-3"><div class="card p-3 text-center"><div class="fs-5 fw-bold"><?= hef_money($totals['net']) ?></div><div class="text-muted small">Net payable</div></div></div>
     <div class="col-6 col-lg-3"><div class="card p-3 text-center"><div class="fs-5 fw-bold text-success"><?= hef_money($totals['paid']) ?></div><div class="text-muted small">Paid · <?= hef_money($totals['pending']) ?> pending</div></div></div>
+    <?php if ($arrearsTotal > 0): ?>
+    <div class="col-6 col-lg-3"><div class="card p-3 text-center border-danger"><div class="fs-5 fw-bold text-danger"><?= hef_money($totals['pending'] + $arrearsTotal) ?></div><div class="text-muted small">Total payable now (incl. <?= hef_money($arrearsTotal) ?> owed earlier)</div></div></div>
+    <?php endif; ?>
 </div>
 
 <div class="card">
@@ -234,13 +251,22 @@ require_once __DIR__ . '/header.php';
                         <td>
                             <div class="fw-semibold"><?= htmlspecialchars($r['name']) ?></div>
                             <?php if ($r['notes']): ?><div class="small text-muted"><?= htmlspecialchars($r['notes']) ?></div><?php endif; ?>
+                            <?php if (isset($arrears[(int) $r['staff_id']])): ?>
+                                <?php $ar = $arrears[(int) $r['staff_id']]; ?>
+                                <div class="small text-danger">+ <?= hef_money($ar['total']) ?> owed from <?= $ar['count'] ?> earlier month<?= $ar['count'] === 1 ? '' : 's' ?></div>
+                            <?php endif; ?>
                         </td>
                         <td class="text-end"><?= hef_money($r['base_salary']) ?></td>
                         <td class="text-end"><?= (float) $r['attendance_deduction'] > 0 ? '<span class="text-danger">−' . hef_money($r['attendance_deduction']) . '</span><div class="small text-muted">' . rtrim(rtrim(number_format((float) $r['deduction_days'], 1), '0'), '.') . ' day(s)</div>' : '—' ?></td>
                         <td class="text-end"><?= (float) $r['additions'] > 0 ? '<span class="text-success">+' . hef_money($r['additions']) . '</span>' : '—' ?></td>
                         <td class="text-end"><?= (float) $r['other_deductions'] > 0 ? '<span class="text-danger">−' . hef_money($r['other_deductions']) . '</span>' : '—' ?></td>
                         <td class="text-end"><?= (float) $r['advance_recovery'] > 0 ? '<span class="text-danger">−' . hef_money($r['advance_recovery']) . '</span>' : '—' ?></td>
-                        <td class="text-end fw-bold"><?= hef_money($r['net_pay']) ?></td>
+                        <td class="text-end fw-bold">
+                            <?= hef_money($r['net_pay']) ?>
+                            <?php if (isset($arrears[(int) $r['staff_id']])): ?>
+                                <div class="small text-danger fw-normal">Total payable: <?= hef_money($r['net_pay'] + $arrears[(int) $r['staff_id']]['total']) ?></div>
+                            <?php endif; ?>
+                        </td>
                         <td>
                             <?php if ($r['status'] === 'paid'): ?>
                                 <span class="badge bg-success">Paid</span><div class="small text-muted"><?= date('d M', strtotime($r['paid_on'])) ?> · <?= htmlspecialchars($r['payment_mode']) ?></div>

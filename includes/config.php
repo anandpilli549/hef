@@ -1,4 +1,9 @@
 <?php
+// define('HEF_DEBUG', true);
+// if (! (defined('HEF_DEBUG') && HEF_DEBUG)) {
+//     ini_set('display_errors', '0');
+//     ini_set('display_startup_errors', '0');
+// }
 /**
  * Notification provider settings. Fill in real credentials as you get
  * them. Nothing in global.php below breaks if a provider's keys are

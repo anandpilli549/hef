@@ -1,4 +1,6 @@
 <?php
+// ini_set('display_errors', '1');
+// error_reporting(E_ALL);
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/../includes/uploads.php';
 hef_require_pro($pdo, $currentUser); // Staff & Payroll is a Pro feature (Owner only)

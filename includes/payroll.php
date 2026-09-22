@@ -121,6 +121,32 @@ function hef_staff_month_window(PDO $pdo, array $staff, string $monthStart): ?ar
     return ['from' => $from, 'to' => $to, 'days' => $days, 'month_days' => (int) $first->format('t')];
 }
 
+/**
+ * Unpaid ('draft') payroll left over from months BEFORE $beforeMonth, added
+ * up per staff member. Lets a page showing one month's payroll also warn
+ * when someone is still owed salary from earlier months that were never
+ * marked paid, so nothing gets missed.
+ *
+ * @return array<int, array{count: int, total: float}> keyed by staff_id
+ */
+function hef_staff_arrears(PDO $pdo, int $companyId, string $beforeMonth): array
+{
+    $stmt = $pdo->prepare(
+        "SELECT staff_id, COUNT(*) AS c, COALESCE(SUM(net_pay), 0) AS total
+         FROM staff_payroll
+         WHERE company_id = ? AND status = 'draft' AND month < ?
+         GROUP BY staff_id"
+    );
+    $stmt->execute([$companyId, $beforeMonth]);
+
+    $out = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $out[(int) $r['staff_id']] = ['count' => (int) $r['c'], 'total' => (float) $r['total']];
+    }
+
+    return $out;
+}
+
 /** Advances with something still to recover, oldest first (given on or before $upTo). */
 function hef_open_advances(PDO $pdo, int $staffId, string $upTo): array
 {
