@@ -73,38 +73,52 @@ function hef_payroll_settings(PDO $pdo, int $companyId): array
 }
 
 /**
- * The days a staff member was employed in a month, or null if not at all.
- * ['from' => DateTimeImmutable, 'to' => DateTimeImmutable, 'days' => int, 'month_days' => int]
+ * A staff member's periods of employment (see includes/contacts.php-style
+ * shared tables — staff_employment_periods), oldest first. An open period
+ * (still working) has ended_on = null.
  */
-function hef_staff_month_window(array $staff, string $monthStart): ?array
+function hef_staff_periods(PDO $pdo, int $staffId): array
+{
+    $stmt = $pdo->prepare('SELECT started_on, ended_on FROM staff_employment_periods WHERE staff_id = ? ORDER BY started_on');
+    $stmt->execute([$staffId]);
+
+    return $stmt->fetchAll();
+}
+
+/**
+ * The days a staff member was actually employed within a month, added up
+ * across every period that overlaps it (so someone who left and came back
+ * in the same month is only paid for the days they actually worked). Returns
+ * null if they weren't employed at all in the month.
+ *
+ * ['from' => earliest overlapping day, 'to' => latest, 'days' => total days
+ *  employed in the month, 'month_days' => days in the month]
+ */
+function hef_staff_month_window(PDO $pdo, array $staff, string $monthStart): ?array
 {
     $first = new DateTimeImmutable($monthStart);
     $last = $first->modify('last day of this month');
-    $from = $first;
-    $to = $last;
 
-    if (! empty($staff['joined_on'])) {
-        $joined = new DateTimeImmutable($staff['joined_on']);
-        if ($joined > $from) {
-            $from = $joined;
+    $days = 0;
+    $from = null;
+    $to = null;
+    foreach (hef_staff_periods($pdo, (int) $staff['id']) as $p) {
+        $pStart = new DateTimeImmutable($p['started_on']);
+        $pEnd = $p['ended_on'] ? new DateTimeImmutable($p['ended_on']) : $last;
+        $overlapStart = max($pStart, $first);
+        $overlapEnd = min($pEnd, $last);
+        if ($overlapStart > $overlapEnd) {
+            continue;
         }
+        $days += (int) $overlapStart->diff($overlapEnd)->days + 1;
+        $from = $from === null ? $overlapStart : min($from, $overlapStart);
+        $to = $to === null ? $overlapEnd : max($to, $overlapEnd);
     }
-    if (! empty($staff['left_on'])) {
-        $left = new DateTimeImmutable($staff['left_on']);
-        if ($left < $to) {
-            $to = $left;
-        }
-    }
-    if ($from > $to) {
+    if ($days === 0) {
         return null;
     }
 
-    return [
-        'from' => $from,
-        'to' => $to,
-        'days' => (int) $from->diff($to)->days + 1,
-        'month_days' => (int) $first->format('t'),
-    ];
+    return ['from' => $from, 'to' => $to, 'days' => $days, 'month_days' => (int) $first->format('t')];
 }
 
 /** Advances with something still to recover, oldest first (given on or before $upTo). */
@@ -137,7 +151,7 @@ function hef_advance_balance(PDO $pdo, int $staffId): float
  */
 function hef_payroll_compute(PDO $pdo, array $settings, array $staff, string $monthStart, ?float $manualRecovery = null): ?array
 {
-    $window = hef_staff_month_window($staff, $monthStart);
+    $window = hef_staff_month_window($pdo, $staff, $monthStart);
     if ($window === null) {
         return null;
     }
@@ -203,15 +217,47 @@ function hef_payroll_compute(PDO $pdo, array $settings, array $staff, string $mo
     ];
 }
 
+/**
+ * Fixes any mismatch between a staff member's current status and their
+ * employment periods, so attendance and payroll always agree with what the
+ * Staff page shows:
+ *   - "Working here" with no open period -> a period is opened.
+ *   - "Left" with an open period -> that period is closed, using their
+ *     left_on date (or today if that isn't set).
+ * This can happen after restoring older data, editing the database by hand,
+ * or upgrading from a version that didn't yet track periods. Safe and cheap
+ * to run on every page load; it changes nothing when everything already
+ * agrees.
+ */
+function hef_reconcile_staff_periods(PDO $pdo, int $companyId): void
+{
+    $pdo->prepare(
+        "INSERT INTO staff_employment_periods (company_id, staff_id, started_on, ended_on, created_at, updated_at)
+         SELECT s.company_id, s.id, COALESCE(s.joined_on, DATE(s.created_at)), NULL, NOW(), NOW()
+         FROM staff s
+         WHERE s.company_id = ? AND s.status = 'active'
+           AND NOT EXISTS (SELECT 1 FROM staff_employment_periods p WHERE p.staff_id = s.id AND p.ended_on IS NULL)"
+    )->execute([$companyId]);
+
+    $pdo->prepare(
+        "UPDATE staff_employment_periods p
+         JOIN staff s ON s.id = p.staff_id
+         SET p.ended_on = COALESCE(s.left_on, CURDATE()), p.updated_at = NOW()
+         WHERE s.company_id = ? AND s.status = 'inactive' AND p.ended_on IS NULL"
+    )->execute([$companyId]);
+}
+
 /** Staff who may need pay for a month: active ones, plus anyone who left during or after it. */
 function hef_staff_for_month(PDO $pdo, int $companyId, string $monthStart): array
 {
+    $monthEnd = (new DateTimeImmutable($monthStart))->modify('last day of this month')->format('Y-m-d');
     $stmt = $pdo->prepare(
-        "SELECT * FROM staff
-         WHERE company_id = ? AND (status = 'active' OR left_on >= ?)
-         ORDER BY name"
+        "SELECT DISTINCT s.* FROM staff s
+         JOIN staff_employment_periods p ON p.staff_id = s.id
+         WHERE s.company_id = ? AND p.started_on <= ? AND (p.ended_on IS NULL OR p.ended_on >= ?)
+         ORDER BY s.name"
     );
-    $stmt->execute([$companyId, $monthStart]);
+    $stmt->execute([$companyId, $monthEnd, $monthStart]);
 
     return $stmt->fetchAll();
 }
@@ -426,7 +472,7 @@ function hef_payroll_due_info(PDO $pdo, int $companyId, ?string $timezone): ?arr
 
     $unpaid = 0;
     foreach (hef_staff_for_month($pdo, $companyId, $prevMonth) as $staff) {
-        if ((float) $staff['monthly_salary'] > 0 && hef_staff_month_window($staff, $prevMonth) !== null && ! isset($paid[$staff['id']])) {
+        if ((float) $staff['monthly_salary'] > 0 && hef_staff_month_window($pdo, $staff, $prevMonth) !== null && ! isset($paid[$staff['id']])) {
             $unpaid++;
         }
     }
