@@ -254,26 +254,33 @@ $renderFields = function (array $v, string $p) use ($T): void {
 };
 
 /**
- * "Add to Google Contacts" URL for a customer: name split into given/family,
- * their first phone number, email, address, and their current requirements
- * (reusing the same $cardLines already built for the card badges) as notes.
- * Google doesn't document this URL scheme — givenname/familyname/phone/email
- * are confirmed to work; address/notes are a best guess and worth testing.
+ * "Add to Google Contacts" URL for a customer or supplier: the whole name
+ * (prefixed and dated) as given name, their first phone number, email and
+ * address, and their current requirements/supplies (reusing the same
+ * $cardLines already built for the card badges) as family name. Google
+ * doesn't document this URL scheme — givenname/familyname/phone/email are
+ * confirmed to work; address is a best guess and worth testing.
+ *
+ * The saved name is prefixed so these are easy to spot in your phone's
+ * contact list, and dated so re-adding someone later doesn't look like a
+ * duplicate: "John Doe" saved today becomes "PC-John Doe 260923" for a
+ * customer, or "PS-John Doe 260923" for a supplier.
  */
-$googleContactsUrl = function (array $c, array $lines) use ($T): string {
-    $nameParts = preg_split('/\s+/', trim((string) $c['name']), 2);
+$googleContactsUrl = function (array $c, array $lines) use ($T, $isCustomer): string {
     $notes = [];
     foreach ($lines as $line) {
         $notes[] = $line['detail'] . ' ' . $line['label'];
     }
 
+    $prefix = $isCustomer ? 'PC-' : 'PS-';
+    $givenName = trim($prefix . trim((string) $c['name']) . ' ' . date('ymd'));
+
     $params = array_filter([
-        'givenname'  => $nameParts[0] ?? '',
-        'familyname' => $nameParts[1] ?? '',
+        'givenname'  => $givenName,
         'phone'      => hef_contact_numbers($c, $T)[0] ?? null,
         'email'      => $c['email'] ?? null,
         'address'    => $c['address'] ?? null,
-        'notes'      => implode('; ', $notes),
+        'familyname' => implode('; ', $notes),
     ], static fn($v) => $v !== null && $v !== '');
 
     return 'https://contacts.google.com/new?' . http_build_query($params);
@@ -312,13 +319,8 @@ require_once __DIR__ . '/../admin/header.php';
                 'type' => $contactType, 'row' => $c, 'tz' => $tz, 'is_owner' => $isOwner,
                 'lines' => $cardLines[$cid] ?? [], 'notes' => $notesByContact[$cid] ?? [],
                 'updated_text' => $c[$T['last_col']] ? 'Updated by the ' . $T['updated_by'] . ' on ' . hef_company_local($pdo, $c[$T['last_col']], $tz) : '',
+                'google_url' => $googleContactsUrl($c, $cardLines[$cid] ?? []),
             ]); ?>
-            <?php if ($isCustomer): ?>
-                <a class="btn btn-sm btn-outline-secondary w-100 mt-2" target="_blank" rel="noopener"
-                   href="<?= htmlspecialchars($googleContactsUrl($c, $cardLines[$cid] ?? [])) ?>">
-                    <i class="bi bi-person-plus me-1"></i>Add to Google Contacts
-                </a>
-            <?php endif; ?>
         </div>
     <?php endforeach; ?>
 </div>

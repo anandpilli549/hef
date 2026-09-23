@@ -477,6 +477,7 @@ function hef_render_contact_card(array $o): void
                 <i class="bi bi-journal-text"></i><?php if ($notes): ?> <span class="badge bg-secondary"><?= count($notes) ?></span><?php endif; ?>
             </button>
             <button type="button" class="btn btn-sm btn-outline-secondary" title="Save a follow-up to your calendar" data-bs-toggle="modal" data-bs-target="#cal<?= $Type . $id ?>"><i class="bi bi-calendar-plus"></i></button>
+            <a class="btn btn-sm btn-outline-secondary" title="Add to Google Contacts" target="_blank" rel="noopener" href="<?= htmlspecialchars($o['google_url'] ?? '#') ?>"><i class="bi bi-person-plus"></i></a>
             <?php if ($o['is_owner']): ?>
                 <button type="button" class="btn btn-sm <?= $c['update_token'] ? 'btn-outline-success' : 'btn-outline-secondary' ?>" title="Private link for them to update their own list" data-bs-toggle="modal" data-bs-target="#link<?= $Type . $id ?>"><i class="bi bi-link-45deg"></i></button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" title="Edit" data-bs-toggle="modal" data-bs-target="#edit<?= $Type . $id ?>"><i class="bi bi-pencil"></i></button>
