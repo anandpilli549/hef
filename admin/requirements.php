@@ -66,6 +66,49 @@ if ($buckets) {
     $stmt->execute([$companyId]);
     $supplierLines = $stmt->fetchAll();
 }
+
+// The WhatsApp message sent to a supplier covers everything customers want
+// for that species + breed, across every age, not just the one bucket the
+// contact button happens to sit under. Group buckets by species+breed first.
+$breedGroups = [];
+foreach ($buckets as $bucket) {
+    $breedKey = $bucket['species_id'] . '|' . ($bucket['breed_id'] === null ? 'null' : $bucket['breed_id']);
+    $breedGroups[$breedKey]['species_name'] = $bucket['species_name'];
+    $breedGroups[$breedKey]['breed_name'] = $bucket['breed_name'];
+    $breedGroups[$breedKey]['buckets'][] = $bucket;
+}
+
+$messagesByBreed = [];
+foreach ($breedGroups as $breedKey => $info) {
+    $breedLabel = $info['breed_name'] ?: $info['species_name'];
+    $lines = ['Customer(s) looking for:', ''];
+    $subtotalLines = [];
+
+    foreach ($info['buckets'] as $bucket) {
+        $age = $bucket['age_days'] !== null ? (int) $bucket['age_days'] : null;
+        $ageLabel = $age !== null ? hef_format_age($age) : 'Any age';
+        $rowsKey = hef_line_key($bucket['species_id'], $bucket['breed_id'], $age);
+        $rows = $customersByBucket[$rowsKey] ?? [];
+
+        $lines[] = $ageLabel;
+        foreach ($rows as $cr) {
+            $lines[] = $cr['name'] . ' — ' . (int) $cr['quantity'];
+        }
+        $lines[] = '';
+
+        $subtotalLines[] = (int) $bucket['total_needed'] . ' ' . $breedLabel . ' - ' . strtolower($ageLabel);
+    }
+
+    $lines[] = 'Sub Total:';
+    foreach ($subtotalLines as $subtotalLine) {
+        $lines[] = $subtotalLine;
+    }
+    $lines[] = '';
+    $lines[] = 'Will you be able to supply?';
+    $lines[] = 'If yes, what is the rate, delivery cost and delivery time?';
+
+    $messagesByBreed[$breedKey] = implode("\n", $lines);
+}
 ?>
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
     <div>
@@ -108,14 +151,10 @@ if ($buckets) {
                         $customerRows = $customersByBucket[$key] ?? [];
                         $match = hef_match_suppliers($supplierLines, $bucket['species_id'], $bucket['breed_id'], $age);
                         $supplierRows = $match['rows'];
-                        // Pre-filled WhatsApp message sent to each supplier.
-                        $needText = (int) $bucket['total_needed'] . ' '
-                            . ($bucket['breed_name'] ? $bucket['breed_name'] . ' - ' : '')
-                            . $bucket['species_name']
-                            . ' (' . ($age !== null ? hef_format_age($age) . ' old' : 'any age') . ')';
-                        $supplierMessage = "A Customer is looking for {$needText}.\n"
-                            . "Will you be able to supply?\n"
-                            . "If yes, what is the rate, delivery cost and delivery time?";
+                        // WhatsApp message for this bucket's supplier(s): the full
+                        // species+breed picture across every age, not just this bucket.
+                        $breedKey = $bucket['species_id'] . '|' . ($bucket['breed_id'] === null ? 'null' : $bucket['breed_id']);
+                        $supplierMessage = $messagesByBreed[$breedKey] ?? '';
                         $matchMode = $match['mode'];
                         $bucketTitle = ($bucket['breed_name'] ? $bucket['breed_name'] . ' · ' : '') . hef_format_age($age);
                     ?>
