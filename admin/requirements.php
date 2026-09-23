@@ -81,7 +81,8 @@ foreach ($buckets as $bucket) {
 $messagesByBreed = [];
 foreach ($breedGroups as $breedKey => $info) {
     $breedLabel = $info['breed_name'] ?: $info['species_name'];
-    $lines = ['Customer(s) looking for:', ''];
+    if($info['species_name']!=$breedLabel) $breedLabel = $info['species_name'] . " - " . $info['breed_name'];
+    $lines = ['Customer(s) looking for : '.$breedLabel, ''];
     $subtotalLines = [];
 
     foreach ($info['buckets'] as $bucket) {
@@ -92,7 +93,7 @@ foreach ($breedGroups as $breedKey => $info) {
 
         $lines[] = $ageLabel;
         foreach ($rows as $cr) {
-            $lines[] = $cr['name'] . ' — ' . (int) $cr['quantity'];
+            $lines[] = "Customer" . ' — ' . (int) $cr['quantity'];
         }
         $lines[] = '';
 
@@ -105,7 +106,12 @@ foreach ($breedGroups as $breedKey => $info) {
     }
     $lines[] = '';
     $lines[] = 'Will you be able to supply?';
-    $lines[] = 'If yes, what is the rate, delivery cost and delivery time?';
+    $lines[] = 'If yes,';
+    $lines[] = '1. What is the rate?';
+    $lines[] = '2. Shamshabad delivery cost?';
+    $lines[] = '3. Delivery time?';
+    $lines[] = '';
+    $lines[] = 'Please respond as soon as possible. Say No, if you are not able to supply.';
 
     $messagesByBreed[$breedKey] = implode("\n", $lines);
 }

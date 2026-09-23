@@ -253,6 +253,32 @@ $renderFields = function (array $v, string $p) use ($T): void {
     <?php
 };
 
+/**
+ * "Add to Google Contacts" URL for a customer: name split into given/family,
+ * their first phone number, email, address, and their current requirements
+ * (reusing the same $cardLines already built for the card badges) as notes.
+ * Google doesn't document this URL scheme — givenname/familyname/phone/email
+ * are confirmed to work; address/notes are a best guess and worth testing.
+ */
+$googleContactsUrl = function (array $c, array $lines) use ($T): string {
+    $nameParts = preg_split('/\s+/', trim((string) $c['name']), 2);
+    $notes = [];
+    foreach ($lines as $line) {
+        $notes[] = $line['detail'] . ' ' . $line['label'];
+    }
+
+    $params = array_filter([
+        'givenname'  => $nameParts[0] ?? '',
+        'familyname' => $nameParts[1] ?? '',
+        'phone'      => hef_contact_numbers($c, $T)[0] ?? null,
+        'email'      => $c['email'] ?? null,
+        'address'    => $c['address'] ?? null,
+        'notes'      => implode('; ', $notes),
+    ], static fn($v) => $v !== null && $v !== '');
+
+    return 'https://contacts.google.com/new?' . http_build_query($params);
+};
+
 require_once __DIR__ . '/../admin/header.php';
 ?>
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -287,6 +313,12 @@ require_once __DIR__ . '/../admin/header.php';
                 'lines' => $cardLines[$cid] ?? [], 'notes' => $notesByContact[$cid] ?? [],
                 'updated_text' => $c[$T['last_col']] ? 'Updated by the ' . $T['updated_by'] . ' on ' . hef_company_local($pdo, $c[$T['last_col']], $tz) : '',
             ]); ?>
+            <?php if ($isCustomer): ?>
+                <a class="btn btn-sm btn-outline-secondary w-100 mt-2" target="_blank" rel="noopener"
+                   href="<?= htmlspecialchars($googleContactsUrl($c, $cardLines[$cid] ?? [])) ?>">
+                    <i class="bi bi-person-plus me-1"></i>Add to Google Contacts
+                </a>
+            <?php endif; ?>
         </div>
     <?php endforeach; ?>
 </div>
